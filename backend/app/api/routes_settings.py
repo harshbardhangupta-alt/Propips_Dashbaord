@@ -111,6 +111,32 @@ def _uerr(e: Exception):
     raise HTTPException(502, str(e))
 
 
+@router.get("/universe/status")
+def universe_status(db: Session = Depends(get_db)):
+    return {**us.status(db), "refreshing": us._ensure_lock.locked()}
+
+
+@router.post("/universe/refresh", status_code=202)
+def universe_refresh():
+    """Re-download the Dhan instrument list and both index lists in the background."""
+    import threading
+
+    from app.database.session import SessionLocal
+
+    if us._ensure_lock.locked():
+        return {"status": "ALREADY_RUNNING"}
+
+    def work():
+        s = SessionLocal()
+        try:
+            us.ensure_universes(s, force=True)
+        finally:
+            s.close()
+
+    threading.Thread(target=work, name="universe-refresh", daemon=True).start()
+    return {"status": "STARTED"}
+
+
 @router.post("/universe/{universe}/sync")
 def sync_universe(universe: str, db: Session = Depends(get_db)):
     try:

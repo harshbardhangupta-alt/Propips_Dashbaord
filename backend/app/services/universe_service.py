@@ -1,11 +1,16 @@
 """Nifty 100 / Nifty 250 (LargeMidcap 250) universe and Dhan instrument mapping.
 
-Constituents come ONLY from official NSE Indices CSV files (downloaded or uploaded by the
-user). Nothing is hard-coded or invented. Instrument ids come from Dhan's scrip master.
+Constituents are fetched AUTOMATICALLY from official NSE sources (niftyindices.com CSV,
+NSE archive CSV, then NSE's website JSON API). Nothing is hard-coded or invented.
+Instrument ids come from Dhan's public scrip master, also downloaded automatically.
+``ensure_universes`` runs at startup and every 30 minutes; it only downloads what is missing
+or older than its refresh interval, so failures are retried automatically.
 """
 from __future__ import annotations
 
 import json
+import threading
+from datetime import timedelta
 
 import httpx
 from sqlalchemy import select
@@ -16,7 +21,16 @@ from app.core.timeutils import iso
 from app.database.models import Instrument, UniverseMember, UniverseRefresh, utcnow
 from app.database.repository import audit
 from app.integrations.dhan_client import SCRIP_MASTER_COMPACT_URL, DhanError, download_scrip_master
-from app.market_data.instruments import EXPECTED_SIZE, NSE_INDEX_SOURCES, ScripRow, parse_constituents_csv, parse_scrip_master
+from app.market_data.instruments import (
+    EXPECTED_SIZE,
+    NSE_API_INDEX,
+    NSE_INDEX_SOURCES,
+    Constituent,
+    ScripRow,
+    parse_constituents_csv,
+    parse_nse_api_json,
+    parse_scrip_master,
+)
 
 UNIVERSES = ("NIFTY100", "NIFTY250")
 UNIVERSE_LABEL = {"NIFTY100": "Nifty 100", "NIFTY250": "Nifty LargeMidcap 250 (\"Nifty 250\")"}
@@ -38,20 +52,39 @@ def load_scrip_cache() -> dict[str, ScripRow]:
     return {k: ScripRow(**v) for k, v in raw.get("rows", {}).items()}
 
 
-def download_constituents(universe: str, transport: httpx.BaseTransport | None = None) -> tuple[str, str]:
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept": "text/csv,application/json,text/html,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def download_constituents(universe: str, transport: httpx.BaseTransport | None = None) -> tuple[list[Constituent], str]:
+    """Try every official source in turn; return (constituents, source_url)."""
     errors = []
-    headers = {"User-Agent": "Mozilla/5.0 (paper-trading-dashboard; constituent sync)", "Accept": "text/csv,*/*"}
-    for url in NSE_INDEX_SOURCES[universe]:
-        try:
-            with httpx.Client(timeout=30, headers=headers, transport=transport, follow_redirects=True) as c:
+    with httpx.Client(timeout=30, headers=BROWSER_HEADERS, transport=transport, follow_redirects=True) as c:
+        for url in NSE_INDEX_SOURCES[universe]:
+            try:
                 r = c.get(url)
                 r.raise_for_status()
                 if "symbol" not in r.text[:500].lower():
                     raise UniverseError("response is not a constituent CSV")
-                return r.text, url
-        except Exception as exc:  # noqa: BLE001 - report every source failure
-            errors.append(f"{url}: {exc}")
-    raise UniverseError("Could not download official constituents. " + " | ".join(errors) + " — upload the CSV from niftyindices.com instead.")
+                return parse_constituents_csv(r.text), url
+            except Exception as exc:  # noqa: BLE001 - report every source failure
+                errors.append(f"{url}: {exc}")
+        # NSE website API needs session cookies from the home page first.
+        api = f"https://www.nseindia.com/api/equity-stockIndices?index={NSE_API_INDEX[universe].replace(' ', '%20')}"
+        try:
+            c.get("https://www.nseindia.com/", headers={"Accept": "text/html"})
+            r = c.get(api, headers={"Accept": "application/json", "Referer": "https://www.nseindia.com/market-data/live-equity-market"})
+            r.raise_for_status()
+            cons = parse_nse_api_json(r.json(), NSE_API_INDEX[universe])
+            if not cons:
+                raise UniverseError("NSE API returned no constituents")
+            return cons, api
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{api}: {exc}")
+    raise UniverseError("Could not fetch the official constituent list from any NSE source. " + " | ".join(errors))
 
 
 def map_instruments(db: Session, rows: dict[str, ScripRow] | None = None) -> dict:
@@ -112,8 +145,9 @@ def sync_universe(db: Session, universe: str, csv_text: str | None = None, sourc
         raise UniverseError(f"Unknown universe {universe}")
     try:
         if csv_text is None:
-            csv_text, source = download_constituents(universe)
-        cons = parse_constituents_csv(csv_text)
+            cons, source = download_constituents(universe)
+        else:
+            cons = parse_constituents_csv(csv_text)
         if not cons:
             raise UniverseError("Constituent file has no rows")
     except (UniverseError, ValueError) as exc:
@@ -179,3 +213,53 @@ def last_success(db: Session, universe: str) -> dict | None:
     r = db.scalar(select(UniverseRefresh).where(UniverseRefresh.universe == universe, UniverseRefresh.status.in_(("SUCCESS", "PARTIAL")))
                   .order_by(UniverseRefresh.id.desc()))
     return {"at": iso(r.created_at), "count": r.count, "source": r.source, "status": r.status} if r else None
+
+
+UNIVERSE_MAX_AGE_DAYS = 7
+SCRIP_MAX_AGE_HOURS = 24
+_ensure_lock = threading.Lock()
+
+
+def _last_ok_at(db: Session, name: str):
+    r = db.scalar(select(UniverseRefresh).where(UniverseRefresh.universe == name, UniverseRefresh.status.in_(("SUCCESS", "PARTIAL")))
+                  .order_by(UniverseRefresh.id.desc()))
+    return r.created_at if r else None
+
+
+def ensure_universes(db: Session, force: bool = False) -> dict:
+    """Automatically download whatever is missing or stale. Safe to call repeatedly."""
+    if not _ensure_lock.acquire(blocking=False):
+        return {"status": "ALREADY_RUNNING"}
+    try:
+        out: dict = {}
+        now = utcnow()
+        last = _last_ok_at(db, "SCRIP_MASTER")
+        if force or not load_scrip_cache() or last is None or now - last > timedelta(hours=SCRIP_MAX_AGE_HOURS):
+            try:
+                out["SCRIP_MASTER"] = sync_scrip_master(db)
+            except UniverseError as e:
+                out["SCRIP_MASTER"] = {"error": str(e)}
+        for u in UNIVERSES:
+            last = _last_ok_at(db, u)
+            if force or last is None or now - last > timedelta(days=UNIVERSE_MAX_AGE_DAYS) or not members(db, u):
+                try:
+                    out[u] = sync_universe(db, u)
+                except UniverseError as e:
+                    out[u] = {"error": str(e)}
+        return out
+    finally:
+        _ensure_lock.release()
+
+
+def status(db: Session) -> dict:
+    out = {}
+    for u in UNIVERSES:
+        insts = members(db, u)
+        last_fail = db.scalar(select(UniverseRefresh).where(UniverseRefresh.universe == u).order_by(UniverseRefresh.id.desc()))
+        out[u] = {"label": UNIVERSE_LABEL[u], "count": len(insts), "mapped": sum(1 for i in insts if i.security_id),
+                  "last_success": last_success(db, u),
+                  "last_error": last_fail.message if last_fail is not None and last_fail.status == "FAILED" else None}
+    last_fail = db.scalar(select(UniverseRefresh).where(UniverseRefresh.universe == "SCRIP_MASTER").order_by(UniverseRefresh.id.desc()))
+    out["SCRIP_MASTER"] = {"rows": len(load_scrip_cache()), "last_success": last_success(db, "SCRIP_MASTER"),
+                           "last_error": last_fail.message if last_fail is not None and last_fail.status == "FAILED" else None}
+    return out

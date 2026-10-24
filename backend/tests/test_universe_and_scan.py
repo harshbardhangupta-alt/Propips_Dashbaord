@@ -152,3 +152,64 @@ def test_signal_invalidated_when_setup_breaks(db, monkeypatch):
     db.expire_all()
     sig = db.get(Signal, sig.id)
     assert sig.validity == "INVALIDATED" and not signal_entry_gate(db, sig.id)[0]
+
+
+def test_auto_download_falls_back_to_nse_api():
+    import httpx
+
+    calls = []
+
+    def h(req: httpx.Request):
+        calls.append(str(req.url))
+        if "niftyindices" in req.url.host or "nsearchives" in req.url.host:
+            return httpx.Response(403, text="blocked")
+        if req.url.path == "/":
+            return httpx.Response(200, text="<html></html>", headers={"set-cookie": "nsit=abc; Path=/"})
+        assert req.headers.get("cookie") == "nsit=abc"  # session cookie reused
+        return httpx.Response(200, json={"data": [
+            {"symbol": "NIFTY 100", "priority": 1},
+            {"symbol": "AAA", "series": "EQ", "meta": {"companyName": "Aaa Ltd", "industry": "Banks", "isin": "INE000A01011"}},
+            {"symbol": "BBB", "series": "EQ", "meta": {"companyName": "Bbb Ltd", "industry": "IT", "isin": "INE000B01011"}},
+        ]})
+
+    cons, src = us.download_constituents("NIFTY100", transport=httpx.MockTransport(h))
+    assert [c.symbol for c in cons] == ["AAA", "BBB"] and cons[0].industry == "Banks"
+    assert "equity-stockIndices" in src and "NIFTY%20100" in src
+
+
+def test_ensure_universes_downloads_only_when_needed(db, monkeypatch):
+    from app.market_data.instruments import parse_constituents_csv
+
+    n = {"cons": 0, "scrip": 0}
+
+    def fake_cons(u, transport=None):
+        n["cons"] += 1
+        return parse_constituents_csv(constituents_csv(["AAA", "BBB"])), "mock://" + u
+
+    def fake_scrip():
+        n["scrip"] += 1
+        return scrip_master_csv(["AAA", "BBB"])
+
+    monkeypatch.setattr(us, "download_constituents", fake_cons)
+    monkeypatch.setattr(us, "download_scrip_master", fake_scrip)
+    us.ensure_universes(db)
+    assert n == {"cons": 2, "scrip": 1}
+    assert len(us.members(db, "NIFTY100", mapped_only=True)) == 2
+    assert us.ensure_universes(db) == {}  # fresh -> nothing downloaded
+    assert n == {"cons": 2, "scrip": 1}
+    us.ensure_universes(db, force=True)
+    assert n == {"cons": 4, "scrip": 2}
+    st = us.status(db)
+    assert st["NIFTY250"]["count"] == 2 and st["SCRIP_MASTER"]["rows"] == 2
+
+
+def test_failed_auto_download_is_retried_later(db, monkeypatch):
+    def boom(u, transport=None):
+        raise us.UniverseError("NSE unreachable")
+
+    monkeypatch.setattr(us, "download_constituents", boom)
+    monkeypatch.setattr(us, "download_scrip_master", lambda: scrip_master_csv(["AAA"]))
+    res = us.ensure_universes(db)
+    assert "NSE unreachable" in res["NIFTY100"]["error"]
+    assert us.status(db)["NIFTY100"]["last_error"]
+    assert "NIFTY100" in us.ensure_universes(db)  # still missing -> tried again on the next run

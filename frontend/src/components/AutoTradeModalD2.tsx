@@ -6,20 +6,19 @@ import { Level } from "../charts/PriceChart";
 import { money, num, time } from "../lib/format";
 import { useDebounced } from "../lib/useDebounced";
 import { ExplainButton } from "./ExplainButton";
-import { PaperBadge } from "./PaperBadge";
-import { ErrorBox, Field, KV, Modal, Notice, Pill, Spinner } from "./ui";
+import { Field, Modal, Notice, Pill, Spinner } from "./ui";
 
 export function AutoTradeModalD2({ signal: s, onClose }: { signal: any; onClose: () => void }) {
   const qc = useQueryClient();
-  const [allocation, setAllocation] = useState("");
+  const [amount, setAmount] = useState("");
   const [override, setOverride] = useState(false);
   const [oEntry, setOEntry] = useState(String(s.entry));
   const [oStop, setOStop] = useState(String(s.stop_loss));
   const [oTarget, setOTarget] = useState(String(s.target));
   const [ack, setAck] = useState(false);
 
-  const alloc = Number(allocation);
-  const valid = allocation.trim() !== "" && Number.isFinite(alloc) && alloc > 0;
+  const alloc = Number(amount);
+  const valid = amount.trim() !== "" && Number.isFinite(alloc) && alloc > 0;
   const body = valid ? { signal_id: s.id, allocation: alloc, override: override ? { entry: Number(oEntry), stop_loss: Number(oStop), target: Number(oTarget) } : null } : null;
   const debounced = useDebounced(body, 300);
   const preview = useQuery({ queryKey: ["d2-preview", debounced], queryFn: () => api("/api/d2/preview", { body: debounced }), enabled: !!debounced });
@@ -29,95 +28,95 @@ export function AutoTradeModalD2({ signal: s, onClose }: { signal: any; onClose:
   const f = s.fibonacci ?? {};
   const z = s.demand_zone;
   const levels: Level[] = [
-    { label: "Entry", price: override ? Number(oEntry) : s.entry, color: LEVEL_COLORS.entry },
+    { label: "Buy above", price: override ? Number(oEntry) : s.entry, color: LEVEL_COLORS.entry },
     { label: "Stop", price: override ? Number(oStop) : s.stop_loss, color: LEVEL_COLORS.stop },
     { label: "Target", price: override ? Number(oTarget) : s.target, color: LEVEL_COLORS.target },
-    ...(s.impulse ? [{ label: "Impulse high", price: s.impulse.high, color: LEVEL_COLORS.fib, dashed: true }, { label: "Impulse low", price: s.impulse.low, color: LEVEL_COLORS.fib, dashed: true }] : []),
-    ...(f.fib_50 ? [{ label: "Fib 50%", price: f.fib_50, color: LEVEL_COLORS.fib, dashed: true }, { label: "Fib 61.8%", price: f.fib_618, color: LEVEL_COLORS.fib, dashed: true }, { label: "Fib 78.6%", price: f.fib_786, color: LEVEL_COLORS.fib, dashed: true }] : []),
+    ...(f.fib_50 ? [{ label: "50%", price: f.fib_50, color: LEVEL_COLORS.fib, dashed: true }] : []),
     ...(z ? [{ label: "Zone high", price: z.high, color: LEVEL_COLORS.zone, dashed: true }, { label: "Zone low", price: z.low, color: LEVEL_COLORS.zone, dashed: true }] : []),
   ];
+  const tradable = s.status === "QUALIFIED" && s.validity === "VALID" && !(s.trade && ["PENDING_ENTRY", "OPEN", "CONFIGURED"].includes(s.trade.status));
 
   return (
     <Modal open onClose={onClose} wide title={
-      <div className="flex flex-wrap items-center gap-3">
-        <div>
-          <div className="text-lg font-semibold">{s.symbol} <span className="text-sm font-normal text-fg-muted">· {s.company_name}</span></div>
-          <div className="text-xs text-fg-faint">Dashboard 2 · Mechanical Swing paper auto trade</div>
-        </div>
-        <div className="ml-2"><div className="num text-lg">{num(s.quote?.ltp ?? s.ltp)}</div><div className="text-[11px] text-fg-faint">{s.quote?.data_state?.replace(/_/g, " ").toLowerCase() ?? "no quote"} · {time(s.quote?.fetched_at)}</div></div>
-        <Pill tone="good">Score {s.score.toFixed(0)} · {s.grade}</Pill>
-        {s.after_market && <Pill tone="muted">{s.after_market_label}</Pill>}
-        <PaperBadge />
+      <div className="flex items-baseline gap-3">
+        <span className="text-lg font-semibold">{s.symbol}</span>
+        <span className="text-sm text-fg-muted">{s.company_name}</span>
+        <span className="num text-lg">{num(s.quote?.ltp ?? s.ltp)}</span>
+        <Pill tone="good">{s.grade} · {s.score.toFixed(0)}</Pill>
       </div>
     }>
       {create.isSuccess ? (
-        <div className="space-y-4">
-          <Notice tone="good">Paper auto trade #{create.data.trade.id} armed (PENDING ENTRY). {create.data.message}</Notice>
-          <div className="flex justify-end"><button className="btn-primary" onClick={onClose}>Done</button></div>
+        <div className="space-y-4 py-6 text-center">
+          <div className="text-lg font-medium">Auto trade is on for {s.symbol}</div>
+          <p className="text-sm text-fg-muted">A paper buy happens only if price goes above {num(s.entry)} before {time(s.valid_until)}. Follow it in My Trades.</p>
+          <button className="btn-primary" onClick={onClose}>Done</button>
         </div>
       ) : (
-        <div className="space-y-6">
-          <ChartPanel symbol={s.symbol} levels={levels} defaultTf="4H" />
-          <div className="grid gap-6 lg:grid-cols-3">
-            <div className="rounded-xl border border-ink-line bg-ink p-4 space-y-3">
-              <div className="label">Strategy evidence</div>
-              <KV rows={[
-                ["Daily trend", <span>{s.daily?.bias} · close {num(s.daily?.close)} vs EMA50 {num(s.daily?.ema50)}</span>],
-                ["4H structure", s.h4?.structure?.replace(/_/g, " ").toLowerCase()],
-                ["Impulse", s.impulse ? `${num(s.impulse.low)} → ${num(s.impulse.high)}` : "—"],
-                ["Swing low / high", s.impulse ? `${time(s.impulse.low_time)} / ${time(s.impulse.high_time)}` : "—"],
-                ["Break of structure", s.impulse ? `> ${num(s.impulse.bos_level)} @ ${time(s.impulse.bos_time)}` : "—"],
-                ["Fib 50 / 61.8 / 78.6", f.fib_50 ? `${num(f.fib_50)} / ${num(f.fib_618)} / ${num(f.fib_786)}` : "—"],
-                ["Pullback low", s.pullback ? `${num(s.pullback.low)} (${s.pullback.retracement_pct}% retr.)` : "—"],
-                ["Demand zone", z ? `${num(z.low)} – ${num(z.high)}` : "—"],
-                ["Confirmation candle", s.confirmation ? `${time(s.confirmation.time)} · O ${num(s.confirmation.open)} C ${num(s.confirmation.close)}` : "—"],
-                ["Valid until", time(s.valid_until)],
-              ]} />
-              <div className="text-[11px] text-fg-faint">Demand zones are technical price areas; they do not prove institutional orders.</div>
-            </div>
-            <div className="rounded-xl border border-ink-line bg-ink p-4 space-y-3">
-              <div className="label">Strategy trade plan {override && <Pill tone="warn">OVERRIDDEN</Pill>}</div>
-              <KV rows={[
-                ["Entry (buy-stop)", num(s.entry)],
-                ["Stop loss", num(s.stop_loss)],
-                ["Target (3R)", num(s.target)],
-                ["Reward : risk", `1 : ${s.reward_risk}`],
-              ]} />
-              <div className="text-[11px] text-fg-faint">{s.plan?.entry_rule}. Values are calculated by the Mechanical Swing engine and read-only by default.</div>
-              <label className="flex items-center gap-2 text-sm text-fg-muted"><input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} /> Manually override levels</label>
-              {override && (
-                <div className="space-y-3">
-                  <Notice tone="warn">Overridden trades are labelled as such, keep the original strategy values, and must still meet the 1:3 minimum.</Notice>
-                  <div className="grid grid-cols-3 gap-2">
-                    <Field label="Entry"><input className="input num" value={oEntry} onChange={(e) => setOEntry(e.target.value)} /></Field>
-                    <Field label="Stop"><input className="input num" value={oStop} onChange={(e) => setOStop(e.target.value)} /></Field>
-                    <Field label="Target"><input className="input num" value={oTarget} onChange={(e) => setOTarget(e.target.value)} /></Field>
-                  </div>
-                </div>
-              )}
-              <ExplainButton kind="D2_SIGNAL" signalId={s.id} />
-            </div>
-            <div className="rounded-xl border border-ink-line bg-ink p-4 space-y-3">
-              <Field label="Fund allocation (₹)" hint={preview.data ? `Available paper cash ${money(preview.data.account.available_cash, 0)}` : "Required — never auto-filled"}>
-                <input className="input num" inputMode="decimal" value={allocation} onChange={(e) => setAllocation(e.target.value)} placeholder="e.g. 25000" />
-              </Field>
-              {preview.isFetching && <Spinner />}
-              {plan && (
-                <>
-                  <KV rows={[["Quantity", `${plan.quantity} sh`], ["Capital required", money(plan.capital_required)], ["Planned risk", money(plan.planned_risk)], ["Potential reward", money(plan.potential_reward)], ["Reward : risk", `1 : ${num(plan.reward_risk)}`], ["Remaining paper cash", money(plan.remaining_cash)]]} />
-                  {plan.errors.map((e: string) => <Notice key={e} tone="bad">{e}</Notice>)}
-                  {plan.warnings.map((e: string) => <Notice key={e} tone="warn">{e}</Notice>)}
-                </>
-              )}
-              {preview.isError && <ErrorBox error={preview.error} />}
-              <label className="flex items-center gap-2 text-sm text-fg-muted"><input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /> I confirm the allocation and that this is a paper (simulated) trade only.</label>
-              {create.isError && <ErrorBox error={create.error} />}
-              <div className="flex justify-end gap-2">
-                <button className="btn-ghost" onClick={onClose}>Cancel</button>
-                <button className="btn-primary" disabled={!plan?.ok || !ack || create.isPending || preview.isFetching} onClick={() => create.mutate()}>{create.isPending ? "Enabling…" : "Enable Paper Auto Trade"}</button>
+        <div className="grid gap-6 lg:grid-cols-[1fr,340px]">
+          <div className="min-w-0 space-y-4">
+            <ChartPanel symbol={s.symbol} levels={levels} defaultTf="4H" />
+            <details className="rounded-lg border border-ink-line p-3 text-sm">
+              <summary className="cursor-pointer text-fg-muted">Why this setup?</summary>
+              <ul className="mt-3 space-y-1.5">
+                {s.checks?.map((c: any) => (
+                  <li key={c.rule + c.name} className="flex gap-2"><span className={c.passed ? "text-up" : "text-down"}>{c.passed ? "✓" : "✕"}</span><span><span className="text-fg">{c.name}</span> <span className="text-fg-faint">— {c.detail}</span></span></li>
+                ))}
+              </ul>
+              <div className="mt-3"><ExplainButton kind="D2_SIGNAL" signalId={s.id} /></div>
+              <div className="mt-2 text-xs text-fg-faint">The score is a checklist of strategy quality, not a probability of profit.</div>
+            </details>
+          </div>
+
+          <div className="space-y-4">
+            <div className="rounded-lg bg-white/[0.03] p-3 text-sm">
+              <div className="grid grid-cols-2 gap-y-1">
+                <span className="text-fg-muted">Buy above</span><span className="num text-right">{num(override ? Number(oEntry) : s.entry)}</span>
+                <span className="text-fg-muted">Stop loss</span><span className="num text-right text-down">{num(override ? Number(oStop) : s.stop_loss)}</span>
+                <span className="text-fg-muted">Target</span><span className="num text-right text-up">{num(override ? Number(oTarget) : s.target)}</span>
+                <span className="text-fg-muted">Valid until</span><span className="num text-right">{time(s.valid_until)}</span>
               </div>
-              <div className="text-[11px] text-fg-faint">Enabling never opens a position by itself. Entry is simulated only if a completed 5m candle trades through the buy-stop while the signal is still valid; trading at/below the stop first invalidates it.</div>
             </div>
+            {!tradable ? <Notice tone="muted">This setup can't be traded now ({s.trade ? "already has a trade" : s.validity?.toLowerCase()}).</Notice> : (
+              <>
+                <Field label="Amount to invest (₹)" hint={preview.data ? `Paper cash available: ${money(preview.data.account.available_cash, 0)}` : undefined}>
+                  <input className="input num" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="25000" />
+                </Field>
+                <details className="text-sm">
+                  <summary className="cursor-pointer text-fg-faint">Change levels manually</summary>
+                  <div className="mt-2 space-y-2">
+                    <label className="flex items-center gap-2 text-fg-muted"><input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} /> Use my own levels (trade is marked “overridden”, 1:3 still required)</label>
+                    {override && (
+                      <div className="grid grid-cols-3 gap-2">
+                        <Field label="Buy"><input className="input num" value={oEntry} onChange={(e) => setOEntry(e.target.value)} /></Field>
+                        <Field label="Stop"><input className="input num" value={oStop} onChange={(e) => setOStop(e.target.value)} /></Field>
+                        <Field label="Target"><input className="input num" value={oTarget} onChange={(e) => setOTarget(e.target.value)} /></Field>
+                      </div>
+                    )}
+                  </div>
+                </details>
+                {preview.isFetching && <Spinner />}
+                {plan && (
+                  <div className="rounded-lg bg-white/[0.03] p-3 text-sm">
+                    <div className="grid grid-cols-2 gap-y-1">
+                      <span className="text-fg-muted">Shares</span><span className="num text-right">{plan.quantity}</span>
+                      <span className="text-fg-muted">Invested</span><span className="num text-right">{money(plan.capital_required)}</span>
+                      <span className="text-fg-muted">Max loss</span><span className="num text-right text-down">{money(plan.planned_risk)}</span>
+                      <span className="text-fg-muted">Potential profit</span><span className="num text-right text-up">{money(plan.potential_reward)}</span>
+                    </div>
+                  </div>
+                )}
+                {plan?.errors?.map((e: string) => <Notice key={e} tone="bad">{e}</Notice>)}
+                {create.isError && <Notice tone="bad">{(create.error as Error).message}</Notice>}
+                <label className="flex items-start gap-2 text-sm text-fg-muted">
+                  <input type="checkbox" className="mt-1" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+                  I understand this is paper trading — no real order is placed.
+                </label>
+                <div className="flex gap-2">
+                  <button className="btn-ghost flex-1" onClick={onClose}>Cancel</button>
+                  <button className="btn-primary flex-1" disabled={!plan?.ok || !ack || create.isPending || preview.isFetching} onClick={() => create.mutate()}>{create.isPending ? "Starting…" : "Start auto trade"}</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

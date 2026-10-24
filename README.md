@@ -64,9 +64,9 @@ backend/                     FastAPI + SQLAlchemy + APScheduler (Python)
   app/paper_trading/         engine (ledger), execution (fill rules), risk_manager, charges, position_manager
   app/services/              universe, scan, signal, mtf, settings, market data, explanations
   app/database/              models, session, repository, Alembic migrations
-  tests/                     143 pytest tests (external APIs mocked; synthetic data only in tests)
+  tests/                     146 pytest tests (external APIs mocked; synthetic data only in tests)
 frontend/                    React 18 + TypeScript + Vite + Tailwind + TradingView Lightweight Charts
-  src/pages/                 Dashboard1, Dashboard2, PaperTradeBook, TradeHistory, Settings, SystemStatus
+  src/pages/                 Dashboard1, Dashboard2, Trades, Settings, SystemStatus
   src/components, charts/    shared UI, modals, chart panel, TradingView widget
 data/                        SQLite DB, encryption key, scrip-master cache, nse_holidays.json
 scripts/                     start scripts (sh/ps1), db_tools.py (backup/reset)
@@ -166,7 +166,7 @@ connection tests.
 
 ## 6. First-time setup
 
-Open **Settings & API Credentials**.
+Open **Settings**. Only the Dhan account needs your input; the stock lists download automatically.
 
 ### 6.1 Dhan Client ID and access token
 1. In Dhan web: *My Profile → Access DhanHQ APIs* → generate an access token. Make sure Data APIs are active.
@@ -181,19 +181,19 @@ when the saved token is older than 24 h. This is a reminder only, not an expiry 
 automatic refresh. The real validity is shown from Dhan's `/profile` (`tokenValidity`) after a test. Use
 *Update / Replace token* to paste a new one.
 
-### 6.2 Universes (Nifty 100 and Nifty 250)
-In **Universes & instrument mapping**, in this order:
-1. **Dhan scrip master** → *Download from Dhan* (`images.dhan.co/api-data/api-scrip-master.csv`, public) or *Upload CSV*.
-2. **Nifty 100** → *Download official list* (`niftyindices.com/IndexConstituent/ind_nifty100list.csv`) or upload it.
-3. **Nifty 250** → *Download official list* (`ind_niftylargemidcap250list.csv`) or upload it.
+### 6.2 Stock lists (automatic)
+Nothing to upload. On startup the backend automatically downloads:
+1. the **Dhan instrument list** (`images.dhan.co/api-data/api-scrip-master.csv`, public), and
+2. the official **Nifty 100** and **Nifty LargeMidcap 250** constituents, trying in turn
+   niftyindices.com CSV → NSE archive CSV → NSE website API (`nseindia.com/api/equity-stockIndices`).
 
-Each sync records its time, source, count, additions and removals. Symbols not found in the scrip master
-(matched by symbol, then ISIN to catch renames) are flagged `MISSING_IN_SCRIP_MASTER` and skipped by scans.
-Nothing is hard-coded. If NSE blocks automated downloads from your network, download the CSV in a browser
-and upload it. Re-sync whenever NSE rebalances the indices (semi-annually).
+The lists refresh weekly (the instrument list daily), and a failed download is retried every 30 minutes.
+**Settings → Stock lists** shows the counts, the last update and any error, plus a *Refresh stock lists*
+button. Stocks are matched to Dhan instruments by symbol, then by ISIN (to catch renames). Nothing is
+hard-coded, and Yahoo is not used.
 
 ### 6.3 Paper accounts
-Both accounts start with ₹1,00,000 of simulated cash. Under **Paper accounts & risk limits** you can change
+Both accounts start with ₹1,00,000 of simulated cash. Under **Settings → Paper money → Risk settings & reset** you can change
 limits and reset an account (type `RESET`; open positions must be closed first; the initial capital is configurable).
 
 ## 7. Dashboard 1 — MTF paper trading
@@ -202,10 +202,10 @@ limits and reset an account (type `RESET`; open positions must be closed first; 
 Price, change and % change come from Dhan `/marketfeed/ohlc` REST snapshots, refreshed every minute during
 the session. They are labelled `RECENT_SNAPSHOT` (≤ 2 min), `DELAYED_SNAPSHOT` (≤ 10 min), `STALE`, or
 `LAST_AVAILABLE` (market closed), and are never called "live". The MTF columns are refreshed every 15 minutes
-during the session, or immediately with *Refresh MTF now*.
+during the session (and at most twice a day outside it, so the table shows the latest close).
 
-Filters: search (symbol or company), MTF bias, confirmation status, auto-trade enabled, open positions.
-Sorting: symbol, price, change, % change, MTF quality, unrealized P&L. *Reset filters* clears all of them.
+The table is deliberately simple: stock, price, change, trend, how many of the 4 timeframes agree, and the
+auto-trade status. Search plus one filter (all / bullish / auto trade on / open positions). Click a row to set up a trade.
 
 ### 7.2 Strategy definition (`app/strategies/dashboard1_mtf.py`)
 All checks use **completed candles only**. 4H candles are built from Dhan 60-minute candles in two
@@ -243,10 +243,10 @@ entries for an open position while it keeps being monitored.
 ## 8. Dashboard 2 — Mechanical Swing scanner
 
 ### 8.1 Schedule (Asia/Kolkata, NSE trading days only)
-* **Every 5 minutes from 09:15 to 15:00 inclusive** (70 runs per day), active after **Start Auto Scan**.
+* **Every 5 minutes from 09:15 to 15:00 inclusive** (70 runs per day), active after **Start auto scan**.
 * **One after-market scan at 19:00**, labelled **AFTER-MARKET SCAN — NOT LIVE MARKET ACTIVITY**. It has
-  **its own toggle** and stays on when you press *Stop Auto Scan*, which stops only the 5-minute scans and cancels a running scan.
-* **Run Scan Now** runs a manual scan at any time. Only one scan runs at a time.
+  on by default and **not** affected by *Stop auto scan* (which stops only the 5-minute scans and cancels a running scan).
+* **Scan now** runs a manual scan at any time. Only one scan runs at a time.
 * Weekends and the holidays in `data/nse_holidays.json` are skipped. Scans run only while the backend runs.
 
 A scan ends as `SUCCESS` (every stock evaluated), `PARTIAL` (some data errors or unmapped stocks), `FAILED`
@@ -291,8 +291,7 @@ Each signal can be traded only once.
 * **Fills:** simulated on completed Dhan 5m candles. Gaps fill at the open. If stop and target are both inside one candle, the stop is assumed first (no invented intrabar path). An intrabar entry whose candle also reaches the stop exits at the stop.
 * **Costs:** estimated delivery charges (STT 0.1% each side, NSE txn, SEBI, stamp 0.015% on buy, ₹12.5 DP + GST on sell, ₹0 brokerage) and slippage. These are estimates only.
 * **Integrity:** every cash or position change happens in one transaction under a lock. `UNIQUE(trade_id, side)` on executions and `UNIQUE(account, idempotency_key)` on trades prevent duplicates. Each 5m candle is processed once per trade, including after a restart.
-* **Paper Trade Book:** views for pending, open, closed, rejected and cancelled/expired trades, filters by strategy, symbol and date, a detail view with simulated executions and the event timeline, cancel / disable / re-enable, and **manual paper exit** at the latest fresh quote (paper ledger only).
-* **Trade History:** closed trades per strategy, simulated net P&L, win/loss counts, average win/loss, profit factor and a cumulative P&L chart. These are paper results, not evidence of real profitability.
+* **My Trades:** account value, cash and P&L for each strategy, tabs for open / waiting / closed / cancelled trades, and a detail window to pause, resume, cancel or close a paper position at the latest fresh price (paper ledger only).
 
 ## 10. TradingView charts
 
@@ -323,7 +322,7 @@ allocations or trades. Everything works with AI disabled.
 ## 12. Tests
 
 ```bash
-cd backend && source .venv/bin/activate && python -m pytest -q     # 143 tests
+cd backend && source .venv/bin/activate && python -m pytest -q     # 146 tests
 cd frontend && npm test                                              # 6 tests
 cd frontend && npx tsc --noEmit -p . && npm run build                # type check + build
 ```
@@ -375,9 +374,9 @@ models are portable and migrations use Alembic. This path has not been exercised
 | Header shows `NETWORK_ERROR` / `ProxyError` | Your network blocks `api.dhan.co`; check firewall or proxy |
 | `AUTH_FAILED` | Token expired or wrong; replace it and test again |
 | `PERMISSION_DENIED` | Data APIs not enabled on your Dhan account |
-| Universe download fails (403) | NSE blocks automated downloads from some networks; download the CSV in a browser and upload it |
+| Stock lists not loading | Check internet access to nseindia.com / niftyindices.com; it retries every 30 min, or press *Refresh stock lists* |
 | Stocks show `MISSING_IN_SCRIP_MASTER` | Re-sync the scrip master; the symbol may have changed (see the mapping note) |
-| Everything `NOT EVALUATED` | Configure Dhan, then *Refresh MTF now* |
+| Trend column empty | Configure Dhan; the MTF check runs every 15 min in market hours and twice a day outside |
 | No qualified D2 setups | Normal. All rules A–H must pass. Check *Rejected candidates* for the reasons |
 | Scans `PARTIAL` | Some stocks had data errors; the message names the last one |
 | Calendar warning | Verify `data/nse_holidays.json` against the NSE circular and set `"verified": true` |

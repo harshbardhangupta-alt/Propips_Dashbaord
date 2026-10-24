@@ -60,6 +60,6 @@ describe("layout", () => {
       </QueryClientProvider>,
     );
     expect(screen.getByRole("status").textContent).toContain("NO LIVE ORDERS");
-    await waitFor(() => expect(screen.getAllByText("NOT CONFIGURED").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByText("Dhan not set up")).toBeTruthy());
   });
 });

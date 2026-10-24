@@ -153,11 +153,19 @@ def job_mtf_refresh() -> str:
     from app.services.mtf_service import refresh_universe
     from app.services.settings_service import get_dhan_client
 
+    from sqlalchemy import func, select
+
+    from app.database.models import MTFSnapshot
+
     now = now_ist()
-    if not (get_calendar().is_trading_day(now.date()) and time(9, 15) <= now.time() <= time(15, 50)):
-        return "SKIPPED: outside market session"
+    in_session = get_calendar().is_trading_day(now.date()) and time(9, 15) <= now.time() <= time(15, 50)
     db = SessionLocal()
     try:
+        if not in_session:
+            # Outside the session, refresh at most twice a day so the table still shows the latest close.
+            newest = db.scalar(select(func.max(MTFSnapshot.evaluated_at)))
+            if newest is not None and (utcnow() - newest).total_seconds() < 12 * 3600:
+                return "SKIPPED: outside market session (data refreshed recently)"
         res = refresh_universe(db, get_dhan_client(db), _shutdown_event)
         return f"{res['status']}: {res['done']}/{res['total']} evaluated, {res['errors']} errors"
     except DhanError as e:
@@ -203,13 +211,28 @@ def job_signal_expiry() -> str:
         db.close()
 
 
+def job_universe_sync() -> str:
+    from app.services.universe_service import ensure_universes
+
+    db = SessionLocal()
+    try:
+        res = ensure_universes(db)
+        if not res:
+            return "SKIPPED: stock lists are up to date"
+        return "; ".join(f"{k}: {v.get('error') or str(v.get('count', v.get('rows', 'ok'))) + ' loaded'}" for k, v in res.items() if isinstance(v, dict))
+    finally:
+        db.close()
+
+
 JOBS = {
+    "universe_sync": ("Auto-download Nifty 100 / Nifty 250 lists and Dhan instruments (retries every 30 min)", job_universe_sync,
+                      lambda: IntervalTrigger(minutes=30, timezone=IST)),
     "d2_regular_scan": ("Dashboard 2 scan every 5 min 09:15–15:00 IST", job_regular_scan, regular_scan_trigger),
     "d2_after_market_scan": ("Dashboard 2 after-market scan 19:00 IST", job_after_market_scan, after_market_trigger),
     "position_monitor": ("Paper entries/exits on completed 5m candles", job_monitor,
                          lambda: CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/5", second=40, timezone=IST)),
     "d1_mtf_refresh": ("Dashboard 1 Nifty 100 MTF refresh every 15 min", job_mtf_refresh,
-                       lambda: CronTrigger(day_of_week="mon-fri", hour="9-15", minute="1,16,31,46", timezone=IST)),
+                       lambda: CronTrigger(minute="1,16,31,46", timezone=IST)),
     "quote_refresh": ("Quote snapshots (REST) every minute in session", job_quotes, lambda: IntervalTrigger(seconds=60, timezone=IST)),
     "signal_expiry": ("Expire stale Dashboard 2 signals", job_signal_expiry, lambda: IntervalTrigger(minutes=5, timezone=IST)),
 }
@@ -218,7 +241,7 @@ _shutdown_event = threading.Event()
 _scheduler: BackgroundScheduler | None = None
 
 
-def start_scheduler() -> BackgroundScheduler:
+def start_scheduler(run_startup_sync: bool = True) -> BackgroundScheduler:
     global _scheduler
     if _scheduler is not None and _scheduler.running:
         return _scheduler
@@ -228,6 +251,9 @@ def start_scheduler() -> BackgroundScheduler:
         sch.add_job(_record, trig(), args=[job_id, fn], id=job_id, name=job_id, replace_existing=True)
     sch.start()
     _scheduler = sch
+    # Fetch the stock lists right away on startup (in the background) instead of waiting 30 min.
+    if run_startup_sync:
+        sch.add_job(_record, args=["universe_sync", job_universe_sync], id="universe_sync_startup", replace_existing=True)
     log.info("Scheduler started with jobs: %s", ", ".join(JOBS))
     return sch
 

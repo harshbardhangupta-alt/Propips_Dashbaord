@@ -19,6 +19,8 @@ NSE_INDEX_SOURCES = {
     ],
 }
 EXPECTED_SIZE = {"NIFTY100": 100, "NIFTY250": 250}
+# Index names used by NSE's own website API (tried when the CSV hosts refuse the request).
+NSE_API_INDEX = {"NIFTY100": "NIFTY 100", "NIFTY250": "NIFTY LARGEMIDCAP 250"}
 
 
 @dataclass
@@ -128,4 +130,21 @@ def parse_scrip_master(text: str) -> dict[str, ScripRow]:
             name=col(row, "SM_SYMBOL_NAME", "DISPLAY_NAME", "SYMBOL_NAME"),
             isin=col(row, "ISIN"),
         )
+    return out
+
+
+def parse_nse_api_json(body: dict, index_name: str) -> list[Constituent]:
+    """Parse https://www.nseindia.com/api/equity-stockIndices?index=... (first row is the index itself)."""
+    out: list[Constituent] = []
+    seen = set()
+    for row in body.get("data", []):
+        sym = str(row.get("symbol", "")).strip().upper()
+        if not sym or sym == index_name.upper() or sym in seen:
+            continue
+        meta = row.get("meta") or {}
+        if not meta and row.get("priority") == 1:
+            continue
+        seen.add(sym)
+        out.append(Constituent(symbol=sym, company_name=str(meta.get("companyName") or "").strip(),
+                               industry=(meta.get("industry") or None), series=row.get("series") or "EQ", isin=meta.get("isin") or None))
     return out

@@ -76,8 +76,8 @@ def test_market_hours():
 def test_scheduler_no_duplicate_jobs_and_clean_shutdown(monkeypatch):
     from app.core import scheduler as sch
 
-    s1 = sch.start_scheduler()
-    s2 = sch.start_scheduler()  # second start must not add jobs
+    s1 = sch.start_scheduler(run_startup_sync=False)
+    s2 = sch.start_scheduler(run_startup_sync=False)  # second start must not add jobs
     try:
         assert s1 is s2
         ids = [j.id for j in s1.get_jobs()]
@@ -85,7 +85,7 @@ def test_scheduler_no_duplicate_jobs_and_clean_shutdown(monkeypatch):
     finally:
         sch.stop_scheduler()
     assert sch.get_scheduler() is None
-    s3 = sch.start_scheduler()  # "restart"
+    s3 = sch.start_scheduler(run_startup_sync=False)  # "restart"
     try:
         assert len(s3.get_jobs()) == len(JOBS)
     finally:
