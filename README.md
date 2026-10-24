@@ -75,6 +75,32 @@ scripts/                     start scripts (sh/ps1), db_tools.py (backup/reset)
 The frontend never decides cash, quantity, fills or risk: it calls `/preview` endpoints and displays the
 backend's numbers. Live dashboard updates use HTTP polling (React Query, 2–20 s); no WebSocket/SSE.
 
+## Quick start without a virtual environment
+
+Packages install into your user Python (`--user`), so no venv is needed.
+
+```bash
+# 1) Backend packages (run once)
+cd backend
+python -m pip install --user -r requirements.txt      # Windows: py -m pip install --user -r requirements.txt
+
+# 2) Frontend packages (run once)
+cd ../frontend
+npm install
+
+# 3) Start the backend  (terminal 1)  -> http://127.0.0.1:8000
+cd backend
+python run.py                                          # Windows: py run.py
+
+# 4) Start the frontend (terminal 2)  -> open http://127.0.0.1:5173
+cd frontend
+npm run dev
+
+# Tests
+cd backend && python -m pytest -q
+cd frontend && npm test
+```
+
 ## 3. Install on macOS / Linux
 
 ```bash
