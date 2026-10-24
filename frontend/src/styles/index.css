@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+html, body, #root { height: 100%; }
+body { @apply bg-ink text-fg font-sans antialiased; font-feature-settings: "cv11", "ss01"; }
+
+@layer components {
+  .panel { @apply bg-ink-panel border border-ink-line rounded-xl shadow-panel; }
+  .panel-pad { @apply p-5; }
+  .label { @apply text-[11px] uppercase tracking-[0.08em] text-fg-faint font-medium; }
+  .num { @apply font-mono tabular-nums; }
+  .input { @apply w-full bg-ink border border-ink-line rounded-lg px-3 py-2 text-sm text-fg placeholder:text-fg-faint outline-none transition focus:border-neon/60 focus:ring-2 focus:ring-neon/10 disabled:opacity-60; }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed; }
+  .btn-primary { @apply btn bg-neon text-ink hover:brightness-95 hover:shadow-glow; }
+  .btn-ghost { @apply btn border border-ink-line text-fg hover:border-fg/20 hover:bg-white/[0.03]; }
+  .btn-danger { @apply btn border border-down/40 text-down hover:bg-down-dim; }
+  .btn-sm { @apply px-2.5 py-1.5 text-xs; }
+  .table-wrap { @apply overflow-auto rounded-xl border border-ink-line; }
+  table.data { @apply w-full text-sm border-collapse; }
+  table.data thead th { @apply sticky top-0 z-10 bg-ink-panel/95 backdrop-blur text-left text-[11px] uppercase tracking-[0.07em] font-medium text-fg-faint px-3 py-2.5 border-b border-ink-line whitespace-nowrap; }
+  table.data tbody td { @apply px-3 py-2.5 border-b border-ink-line/60 whitespace-nowrap; }
+  table.data tbody tr { @apply transition-colors hover:bg-white/[0.02]; }
+  .chip { @apply inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] font-medium border; }
+  .tab { @apply px-3 py-1.5 text-sm rounded-md text-fg-muted hover:text-fg transition; }
+  .tab-active { @apply bg-white/[0.06] text-fg; }
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(245,247,245,0.08); border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
